@@ -1,0 +1,133 @@
+# Deploy VM - approved pipeline for virtual machines (DEMO VERSION)
+# Azure steps are simulated so the demo runs without an Azure subscription.
+# Swap the simulated steps for azure/login + az deployment when a real sandbox exists.
+name: Deploy VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        type: choice
+        options: [dev, test, prod]
+        default: dev
+        required: true
+      region:
+        description: "Azure region (EU only)"
+        type: choice
+        options: [westeurope, northeurope, francecentral]
+        default: westeurope
+        required: true
+      vm_size:
+        description: "VM size"
+        type: choice
+        options: [Standard_B2s, Standard_D2s_v5, Standard_D4s_v5]
+        default: Standard_B2s
+        required: true
+      vm_name:
+        description: "VM name, e.g. vm-qms-dev-01"
+        type: string
+        required: true
+      cost_center:
+        description: "Cost centre, e.g. CC-104233"
+        type: string
+        required: true
+      app_id:
+        description: "Application ID, e.g. APP-20417"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check naming and tagging rules
+        env:
+          ENVIRONMENT: ${{ inputs.environment }}
+          VM_NAME: ${{ inputs.vm_name }}
+          COST_CENTER: ${{ inputs.cost_center }}
+          APP_ID: ${{ inputs.app_id }}
+        run: |
+          ok=1
+          if ! [[ "$VM_NAME" =~ ^vm-[a-z0-9]{2,8}-(dev|test|prod)-[0-9]{2}$ ]]; then
+            echo "::error title=Naming convention::'$VM_NAME' must look like vm-[app]-[env]-[nn], e.g. vm-qms-dev-01"; ok=0
+          elif [[ "$VM_NAME" != *"-$ENVIRONMENT-"* ]]; then
+            echo "::error title=Naming convention::The env part of '$VM_NAME' must match the environment '$ENVIRONMENT'"; ok=0
+          fi
+          if ! [[ "$COST_CENTER" =~ ^CC-[0-9]{6}$ ]]; then
+            echo "::error title=Cost centre::'$COST_CENTER' must look like CC-123456"; ok=0
+          fi
+          if ! [[ "$APP_ID" =~ ^APP-[0-9]{5}$ ]]; then
+            echo "::error title=Application ID::'$APP_ID' must look like APP-12345"; ok=0
+          fi
+          [ "$ok" -eq 1 ] && echo "All inputs follow the platform rules."
+          [ "$ok" -eq 1 ]
+
+  deploy:
+    name: deploy
+    needs: validate
+    runs-on: ubuntu-latest
+    # Referencing the environment makes prod runs wait for the required reviewer.
+    environment: ${{ inputs.environment }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      REGION: ${{ inputs.region }}
+      VM_SIZE: ${{ inputs.vm_size }}
+      VM_NAME: ${{ inputs.vm_name }}
+      COST_CENTER: ${{ inputs.cost_center }}
+      APP_ID: ${{ inputs.app_id }}
+      # Set a repository variable PORTAL_URL to your GitHub Pages mock, e.g. https://<org>.github.io/cloud-portal-mock/
+      PORTAL_URL: ${{ vars.PORTAL_URL }}
+    steps:
+      - name: Check out infrastructure code
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        run: |
+          echo "Signing in with the platform's workload identity (OIDC, no secrets)..."
+          sleep 3
+          echo "Signed in. (Simulated for demo.)"
+
+      - name: Deploy infrastructure
+        run: |
+          APP_PART=$(echo "$VM_NAME" | cut -d- -f2)
+          RG="rg-${APP_PART}-${ENVIRONMENT}"
+          echo "Template:        infra/main.bicep"
+          echo "Resource group:  $RG"
+          echo "Region:          $REGION"
+          echo "VM:              $VM_NAME ($VM_SIZE)"
+          echo "Tags:            CostCenter=$COST_CENTER AppId=$APP_ID Environment=$ENVIRONMENT ManagedBy=pipeline"
+          echo "Running policy checks..."
+          sleep 4
+          # Demo failure path: cost centre CC-000000 is treated as closed, so policy rejects the deployment.
+          if [ "$COST_CENTER" = "CC-000000" ]; then
+            echo "::error title=RequestDisallowedByPolicy::Cost centre CC-000000 is closed. Use an active cost centre from your business unit's finance page."
+            exit 1
+          fi
+          echo "Creating virtual machine..."
+          sleep 8
+          echo "Deployment succeeded. (Simulated for demo.)"
+          echo "RG=$RG" >> "$GITHUB_ENV"
+
+      - name: Publish summary
+        run: |
+          BASE="${PORTAL_URL:-https://${GITHUB_REPOSITORY_OWNER}.github.io/cloud-portal-mock/}"
+          LINK="${BASE}?name=${VM_NAME}&rg=${RG}&region=${REGION}&size=${VM_SIZE}&cc=${COST_CENTER}&app=${APP_ID}&env=${ENVIRONMENT}&repo=${GITHUB_REPOSITORY#*/}#/rg"
+          {
+            echo "## Your VM is deployed"
+            echo ""
+            echo "| Setting | Value |"
+            echo "| --- | --- |"
+            echo "| VM | \`$VM_NAME\` |"
+            echo "| Resource group | \`$RG\` |"
+            echo "| Region | $REGION |"
+            echo "| Size | $VM_SIZE |"
+            echo "| Cost centre | $COST_CENTER |"
+            echo "| Application ID | $APP_ID |"
+            echo ""
+            echo "[View my VM in the cloud portal]($LINK)"
+          } >> "$GITHUB_STEP_SUMMARY"
